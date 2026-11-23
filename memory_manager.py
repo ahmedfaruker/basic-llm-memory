@@ -1,10 +1,11 @@
+import os
+import shutil
+import sys
 import uuid
 
 import requests
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
-import os
-import shutil
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
 EMBED_URL = "http://localhost:11434/api/embed"
@@ -16,16 +17,21 @@ BUDGET = 900         # max tokens we send; the rest is reserved for the answer
 MAX_ANSWER = 250     # cap answer length so one reply can't flood the context
 RECALL_BUDGET = 200  # tokens reserved inside BUDGET for paged-in messages
 TOP_K = 3            # how many records to fetch from the vector store
-USE_RECALL = True    # False = plain FIFO (for the comparison experiment)
+MIN_SCORE = 0.7      # ignore recalled records below this cosine similarity
+
+# CLI: python memory_manager.py [script.txt] [--no-recall] [--debug]
+USE_RECALL = "--no-recall" not in sys.argv
+DEBUG = "--debug" in sys.argv
+SCRIPT = next((a for a in sys.argv[1:] if not a.startswith("--")), None)
+
 LIVE_LIMIT = BUDGET - RECALL_BUDGET if USE_RECALL else BUDGET  # cap for the messages list
-MIN_SCORE = 0.6   # constants section
 
 COLLECTION = "paged_out"
 QDRANT_PATH = "qdrant_data"
 # Wipe the store before the client opens any file (Windows can't delete open files)
 if os.path.exists(QDRANT_PATH):
     shutil.rmtree(QDRANT_PATH)  # no ignore_errors: fail loudly if it's locked
-qdrant = QdrantClient(path=QDRANT_PATH)
+qdrant = QdrantClient(path=QDRANT_PATH)  # local on-disk mode, no server
 
 
 # ---------- token accounting ----------
@@ -37,6 +43,7 @@ def count_tokens(msg):
 
 def total_tokens(messages):
     return sum(count_tokens(m) for m in messages)
+
 
 def bar(used, limit, width=20):
     filled = min(width, round(width * used / limit)) if limit else 0
@@ -52,6 +59,7 @@ def show_budget(live, recall, real):
     for name, used, limit in rows:
         print(f"  {name:<6} [{bar(used, limit)}] {used:>4}/{limit:<4} ({used / limit:4.0%})")
     print(f"  real prompt tokens (prompt_eval_count): {real}")
+
 
 def enforce_budget(messages):
     """FIFO eviction: drop the oldest non-pinned messages until under budget."""
@@ -103,15 +111,20 @@ def page_out(evicted):
 
 def page_in(query):
     """Fetch the most similar paged-out messages that fit in RECALL_BUDGET."""
+    vector = embed(query, "search_query")
+    if DEBUG:
+        raw = qdrant.query_points(COLLECTION, query=vector, limit=TOP_K).points
+        print("  [debug] " + " | ".join(
+            f"{h.score:.2f} {h.payload['content'][:25]!r}" for h in raw
+        ))
     hits = qdrant.query_points(
-        COLLECTION, query=embed(query, "search_query"), limit=TOP_K,
-        score_threshold=MIN_SCORE,
+        COLLECTION, query=vector, limit=TOP_K, score_threshold=MIN_SCORE
     ).points
     recalled, used = [], 0
     for h in hits:
         cost = count_tokens(h.payload)
         if used + cost > RECALL_BUDGET:
-            continue
+            continue  # too big; a smaller, lower-ranked record may still fit
         recalled.append({**h.payload, "score": h.score})
         used += cost
     return recalled
@@ -144,6 +157,19 @@ def ask(messages, recalled):
 
 # ---------- main loop ----------
 
+def read_inputs():
+    """Yield user inputs from a script file, or from the keyboard if none given."""
+    if SCRIPT:
+        with open(SCRIPT, encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    print(f"\nYou: {line.strip()}")
+                    yield line.strip()
+    else:
+        while True:
+            yield input("\nYou: ").strip()
+
+
 def main():
     messages = [
         {
@@ -155,8 +181,9 @@ def main():
     init_store()
 
     turn = 0
-    while True:
-        user_text = input("\nYou: ").strip()
+    rule_msg, rule_evicted_at, total_prompt = None, None, 0
+
+    for user_text in read_inputs():
         if user_text.lower() == "exit":
             break
         if not user_text:
@@ -167,19 +194,26 @@ def main():
         if pinned:
             user_text = user_text[1:].strip()
         messages.append({"role": "user", "content": user_text, "pinned": pinned})
+        if rule_msg is None:
+            rule_msg = messages[-1]  # first user message is the rule under test
 
         evicted = enforce_budget(messages)
         for m in evicted:
             print(f"  [evicted] {m['role']}: {m['content'][:60]!r}")
-        page_out(evicted)
+        if any(m is rule_msg for m in evicted):
+            rule_evicted_at = turn + 1
 
-        recalled = page_in(user_text) if USE_RECALL else []
-        for r in recalled:
-            print(f"  [paged in] {r['score']:.2f} {r['role']}: {r['content'][:60]!r}")
+        recalled = []
+        if USE_RECALL:
+            page_out(evicted)
+            recalled = page_in(user_text)
+            for r in recalled:
+                print(f"  [paged in] {r['score']:.2f} {r['role']}: {r['content'][:60]!r}")
 
         live = total_tokens(messages)
         recall = sum(count_tokens(r) for r in recalled)
         data = ask(messages, recalled)
+        total_prompt += data.get("prompt_eval_count") or 0
         answer = data["message"]["content"]
         # Pin the reply too if its question was pinned (keep Q/A pairs together)
         messages.append({"role": "assistant", "content": answer, "pinned": pinned})
@@ -188,6 +222,11 @@ def main():
         print(f"\nModel: {answer}")
         print(f"[turn {turn}] in context: {len(messages)} msgs | recalled: {len(recalled)}")
         show_budget(live, recall, data.get("prompt_eval_count"))
+
+    print("\n=== SUMMARY ===")
+    print(f"mode: {'FIFO + recall' if USE_RECALL else 'FIFO only'} | turns: {turn}")
+    print(f"rule evicted at turn: {rule_evicted_at}")
+    print(f"total prompt tokens: {total_prompt} | avg/turn: {total_prompt // max(turn, 1)}")
 
 
 if __name__ == "__main__":

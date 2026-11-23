@@ -1,0 +1,20 @@
+My favorite fruit is orange, don't forget.
+Explain how a CPU pipeline works in detail.
+Explain TCP and UDP in detail.
+Explain how DNS resolution works in detail.
+Explain virtual memory and paging in detail.
+Explain how a hash table works in detail.
+Explain the difference between processes and threads in detail.
+Explain how HTTPS encryption works in detail.
+Explain how garbage collection works in detail.
+Explain how a B-tree index works in detail.
+Explain what a deadlock is in detail.
+Explain how backpropagation works in detail.
+Explain how convolutional neural networks work in detail.
+Explain how the Linux scheduler works in detail.
+Explain how RAID levels differ in detail.
+Explain how a compiler optimizes code in detail.
+Explain how load balancers work in detail.
+Explain how CPU caches work in detail.
+Explain how Docker containers work in detail.
+What is my favorite fruit?
