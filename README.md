@@ -8,8 +8,6 @@ This is the first-week output of my graduation project (Context-Aware Memory Man
 
 | File | What it does |
 |---|---|
-| `chat.py` | Sends a single request to Ollama `/api/chat` and prints token counts and timings. |
-| `loop.py` | Chat loop that keeps the full history; used to observe what happens when `num_ctx` fills up. |
 | `memory_manager.py` | Token budget, FIFO eviction, pinning, page out / page in with Qdrant. |
 | `data/fact_test.txt` | 1 fact + 18 filler questions + 1 check question (is the fact remembered?). |
 | `data/rule_test.txt` | 1 behavior rule + 18 filler questions + 1 check question (is the rule still followed?). |
